@@ -29,7 +29,14 @@ const originalConsole = {
   (console as any)[level] = (...args: any[]) => {
     (originalConsole as any)[level].apply(console, args);
     const message = args
-      .map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a)))
+      .map((a) => {
+         if (a instanceof Error) return a.message + (a.stack ? '\n' + a.stack : '');
+         if (a instanceof Node) return new XMLSerializer().serializeToString(a);
+         if (typeof a === 'object') {
+             try { return JSON.stringify(a); } catch(e) { return String(a); }
+         }
+         return String(a);
+      })
       .join(' ');
     const log = { type: level, message, timestamp: new Date().toLocaleTimeString() };
     consoleListeners.forEach((l) => l(log));
@@ -215,8 +222,7 @@ export default function App() {
     }
 
     // 2. Banner Logic
-    if (hasBanner) {
-      await (async () => {
+    const bannerPromise = hasBanner ? (async () => {
         const parser = new DOMParser();
         const doc = parser.parseFromString(scriptInput, 'text/html');
         const scriptTag = doc.querySelector('script');
@@ -508,11 +514,9 @@ export default function App() {
       fillStatus,
     }));
 
-      })();
-    }
+    })() : Promise.resolve();
 
-    if (hasVast) {
-      await (async () => {
+    const vastPromise = hasVast ? (async () => {
         console.log('--- Starting VAST Test ---');
         setVideoResults(prev => ({ ...prev, vastUrlLoaded: true }));
         
@@ -550,25 +554,62 @@ export default function App() {
             }));
             
             const vastXmlText = await vastResponse.text();
+            console.log('VAST XML downloaded. Length:', vastXmlText.length);
             
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(vastXmlText, "text/xml");
             
+            const parseError = xmlDoc.getElementsByTagName('parsererror');
+            if (parseError.length > 0) {
+                 console.error('XML Parsing Error. Dump (first 1000 chars):', vastXmlText.substring(0, 1000));
+                 throw new Error("Failed to parse VAST XML");
+            }
+            console.log('VAST XML parsed successfully.');
+            
+            // Search MediaFile using getElementsByTagName
             const mediaFiles = xmlDoc.getElementsByTagName('MediaFile');
+            console.log("MediaFile Count:", mediaFiles.length);
+            
             if (mediaFiles.length === 0) {
+                 const mediaFilesSection = xmlDoc.getElementsByTagName('MediaFiles')[0];
+                 if (mediaFilesSection) {
+                     console.error('No MediaFile found. MediaFiles section:', mediaFilesSection);
+                 } else {
+                     console.error('No MediaFile found. Full XML Dump:\n', vastXmlText);
+                 }
                  throw new Error("No MediaFile found in VAST XML");
             }
             
             let bestMediaFileUrl = '';
             let bestType = '';
+            
             for (let i = 0; i < mediaFiles.length; i++) {
                 const node = mediaFiles[i];
                 const type = node.getAttribute('type') || '';
-                const url = node.textContent?.trim() || '';
+                const delivery = node.getAttribute('delivery') || '';
+                
+                // Handle CDATA and Text nodes correctly
+                let text = '';
+                for (let j = 0; j < node.childNodes.length; j++) {
+                    const child = node.childNodes[j];
+                    if (child.nodeType === 3 || child.nodeType === 4) { // TEXT_NODE or CDATA_SECTION_NODE
+                        text += child.nodeValue || '';
+                    }
+                }
+                let url = text.trim();
+                
+                // If it's a relative URL, resolve it against the VAST tag URL
+                if (url && !url.startsWith('http') && !url.startsWith('//')) {
+                    try {
+                        url = new URL(url, vastInput.trim()).href;
+                    } catch (e) {
+                        console.warn('Failed to resolve relative URL:', url);
+                    }
+                }
+                
+                console.log(`Found MediaFile [${i}]: textContent=${url}, type=${type}, delivery=${delivery}`);
                 
                 if (url) {
-                     console.log(`Found MediaFile: URL=${url}, MIME=${type}, Resolution=${node.getAttribute('width')}x${node.getAttribute('height')}`);
-                     
                      if (type === 'video/mp4' && !bestMediaFileUrl) {
                          bestMediaFileUrl = url;
                          bestType = type;
@@ -577,51 +618,86 @@ export default function App() {
             }
             
             if (!bestMediaFileUrl) {
-                 bestMediaFileUrl = mediaFiles[0].textContent?.trim() || '';
-                 bestType = mediaFiles[0].getAttribute('type') || 'video/mp4';
+                // Fallback to the first available if no MP4
+                let text = '';
+                if (mediaFiles.length > 0) {
+                    for (let j = 0; j < mediaFiles[0].childNodes.length; j++) {
+                        const child = mediaFiles[0].childNodes[j];
+                        if (child.nodeType === 3 || child.nodeType === 4) {
+                            text += child.nodeValue || '';
+                        }
+                    }
+                    bestMediaFileUrl = text.trim();
+                    if (bestMediaFileUrl && !bestMediaFileUrl.startsWith('http') && !bestMediaFileUrl.startsWith('//')) {
+                        try {
+                            bestMediaFileUrl = new URL(bestMediaFileUrl, vastInput.trim()).href;
+                        } catch (e) { }
+                    }
+                    bestType = mediaFiles[0].getAttribute('type') || 'video/mp4';
+                }
             }
             
             if (!bestMediaFileUrl) {
                 throw new Error("Could not extract a valid MediaFile URL from VAST XML");
             }
             
-            console.log(`Selected Best MediaFile URL: ${bestMediaFileUrl}`);
+            console.log("Selected MediaFile:", bestMediaFileUrl);
+            console.log("MediaFile Type:", bestType);
+            console.log("Video Source:", videoEl.currentSrc);
             
-            // Try fetching the MediaFile to verify it is reachable
+            // Remove previous source elements
+            while (videoEl.firstChild) {
+                videoEl.removeChild(videoEl.firstChild);
+            }
+            
+            console.log('MediaFile available. Setting video src and waiting for metadata...');
+            videoEl.src = bestMediaFileUrl;
+            videoEl.load();
+
+            await new Promise<void>((resolve, reject) => {
+                const onLoadedMetadata = () => {
+                    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+                    videoEl.removeEventListener('error', onErrorLoad);
+                    resolve();
+                };
+                const onErrorLoad = (e: any) => {
+                    videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+                    videoEl.removeEventListener('error', onErrorLoad);
+                    reject(new Error('Video failed to load metadata'));
+                };
+                videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
+                videoEl.addEventListener('error', onErrorLoad);
+            });
+
+            console.log(`Video metadata loaded. src: ${videoEl.currentSrc}, size: ${videoEl.videoWidth}x${videoEl.videoHeight}, readyState: ${videoEl.readyState}`);
+            
+            console.log("Current Video Src:", videoEl.currentSrc);
+            console.log("Video ReadyState:", videoEl.readyState);
+            console.log("Video NetworkState:", videoEl.networkState);
+            console.log("Video Error Code:", videoEl.error ? videoEl.error.code : 'None');
+
+            let player: any = null;
             try {
-               console.log(`Verifying MediaFile reachability: ${bestMediaFileUrl}`);
-               await fetch(bestMediaFileUrl, { method: 'HEAD', mode: 'no-cors' });
+                 player = fluidPlayer(videoEl.id, {
+                   layoutControls: {
+                     autoPlay: true,
+                     mute: true
+                   }
+                });
+                console.log("Fluid Player Initialized:", true);
             } catch (e) {
-               console.warn("MediaFile reachability check failed or blocked by CORS, proceeding anyway:", e);
+                console.log("Fluid Player Initialized:", false);
+                console.warn('fluidPlayer initialization issue:', e);
             }
 
-            console.log('MediaFile available. Attaching to video element and initializing fluid-player...');
-            
-            const sourceEl = document.createElement('source');
-            sourceEl.src = bestMediaFileUrl;
-            sourceEl.type = bestType;
-            videoEl.appendChild(sourceEl);
-
-            const player = fluidPlayer(videoEl.id, {
-               layoutControls: {
-                 autoPlay: true,
-                 mute: true,
-                 allowFullscreen: true
-               }
-            });
-            
-            // Try to auto-play the ad
-            const autoPlayTimer = setTimeout(() => {
-                try {
-                    if (player && typeof player.play === 'function') {
-                        player.play();
-                    } else {
-                        videoEl.play().catch(e => console.warn('Auto-play prevented:', e));
-                    }
-                } catch (e) {
-                    console.warn('Auto-play failed:', e);
+            try {
+                const playPromise = videoEl.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(e => console.warn('Auto-play prevented:', e));
                 }
-            }, 500);
+            } catch (e) {
+                console.warn('Auto-play failed:', e);
+            }
             
             // Native video element events since fluid player uses it
             const onPlay = () => {
@@ -637,7 +713,6 @@ export default function App() {
                if (adFinishedSuccessfully) return;
                console.log('VAST: Video Ad Completed.');
                adFinishedSuccessfully = true;
-               clearTimeout(autoPlayTimer);
                setVideoResults(prev => ({ ...prev, videoAdCompleted: true }));
                
                // Cleanup player to prevent subsequent fake errors
@@ -683,9 +758,9 @@ export default function App() {
             }));
           }
         }
-      })();
-    }
+    })() : Promise.resolve();
 
+    await Promise.all([bannerPromise, vastPromise]);
     setIsRunning(false);
   };
 
