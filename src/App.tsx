@@ -387,6 +387,15 @@ export default function App() {
     await new Promise((r) => setTimeout(r, 2000));
     domObserver.disconnect();
 
+    // Secondary DOM check
+    if (!domRendered && targetSpotId) {
+      const bannerContainer = document.querySelector(`[data-banner-id="${targetSpotId}"]`);
+      if (bannerContainer && bannerContainer.children.length > 0) {
+        domRendered = true;
+        console.log('DOM node found inside banner container.');
+      }
+    }
+
     if (!capturedReq && !domRendered) {
       console.warn('Network timeout: No external requests detected within 20 seconds.');
       setResults((prev) => ({
@@ -409,11 +418,18 @@ export default function App() {
           capturedReq.responseText.substring(0, 300) +
           (capturedReq.responseText.length > 300 ? '...' : ''),
       }));
+    } else if (domRendered) {
+      setResults((prev) => ({
+        ...prev,
+        requestSent: true,
+        httpStatus: 200,
+        responsePreview: 'Unknown (Captured via DOM Rendering)',
+      }));
     }
 
     // 9. Analyze Response
     let reason = '';
-    const status = capturedReq ? capturedReq.status : 0;
+    const status = capturedReq ? capturedReq.status : (domRendered ? 200 : 0);
     const bodyText = capturedReq ? (capturedReq.responseText || '') : '';
     const bodyLower = bodyText.toLowerCase();
 
@@ -452,7 +468,7 @@ export default function App() {
 
     if (domRendered) {
       console.log('Analysis Complete: Ad Rendered in DOM.');
-      if (fillStatus === 'Unknown') fillStatus = 'Filled';
+      fillStatus = 'Filled';
     } else {
       if (!reason) reason = 'No DOM elements injected';
       console.warn(`Analysis Complete: No Ad Rendered. Reason: ${reason}`);
