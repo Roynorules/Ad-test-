@@ -287,6 +287,11 @@ export default function App() {
           m2.id = `container-${admpid}`;
           previewStage.appendChild(m2);
         }
+        if (!previewStage.querySelector(`[data-banner-id="${admpid}"]`)) {
+          const m3 = document.createElement('div');
+          m3.setAttribute('data-banner-id', admpid);
+          previewStage.appendChild(m3);
+        }
         console.log(`Created standard mount targets for ID ${admpid}`);
       }
     }
