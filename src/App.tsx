@@ -229,10 +229,12 @@ export default function App() {
     const pubMatch = scriptInput.match(/pub[=_-]?(\d+)/i) || src.match(/id=(\d+)/i);
     if (pubMatch) publisherId = pubMatch[1];
     
-    setResults(prev => ({ ...prev, spotId: admpid, publisherId }));
+    const targetSpotId = bannerSpotId.trim() || admpid;
+    setResults(prev => ({ ...prev, spotId: targetSpotId, publisherId }));
 
     console.log(`Extracted src: ${src}`);
-    if (admpid) console.log(`Extracted target ID: ${admpid}`);
+    if (admpid) console.log(`Extracted loader ID (data-admpid): ${admpid}`);
+    if (targetSpotId) console.log(`Using Banner Spot ID: ${targetSpotId}`);
 
     // Set up network listener before injection
     let capturedReq: NetworkRequest | null = null;
@@ -254,13 +256,13 @@ export default function App() {
           return;
         }
         
-        // Prefer request containing admpid, or fallback to any external request
-        if (admpid && req.url.includes(admpid)) {
+        // Prefer request containing targetSpotId, or fallback to any external request
+        if (targetSpotId && req.url.includes(targetSpotId)) {
           console.log(`Captured relevant network request matching target ID: ${req.url}`);
           clearTimeout(networkTimeout);
           networkListeners = networkListeners.filter((l) => l !== netListener);
           resolve(req);
-        } else if (!admpid) {
+        } else if (!targetSpotId) {
           console.log(`Captured external network request: ${req.url}`);
           clearTimeout(networkTimeout);
           networkListeners = networkListeners.filter((l) => l !== netListener);
@@ -279,8 +281,6 @@ export default function App() {
           console.log(`Injected provided element: ${child.outerHTML}`);
         }
       });
-      
-      const targetSpotId = bannerSpotId.trim() || admpid;
       
       if (targetSpotId) {
         if (!previewStage.querySelector(`[data-banner-id="${targetSpotId}"]`)) {
