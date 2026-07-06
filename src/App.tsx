@@ -527,21 +527,87 @@ export default function App() {
           videoEl.id = `fluid-player-${Date.now()}`;
           videoEl.className = "w-full";
           videoEl.muted = true; // Required for reliable autoplay
+          videoEl.playsInline = true;
           
           videoWrapper.appendChild(videoEl);
           previewStage.appendChild(videoWrapper);
           
-          console.log('Video element created, initializing fluid-player...');
-          
           try {
+            console.log(`Fetching VAST XML from: ${vastInput.trim()}`);
+            setVideoResults(prev => ({ 
+              ...prev, 
+              adRequestSent: true
+            }));
+            
+            const vastResponse = await fetch(vastInput.trim());
+            if (!vastResponse.ok) {
+                 throw new Error(`HTTP error! status: ${vastResponse.status}`);
+            }
+            
+            setVideoResults(prev => ({ 
+              ...prev, 
+              httpStatus: vastResponse.status
+            }));
+            
+            const vastXmlText = await vastResponse.text();
+            
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(vastXmlText, "text/xml");
+            
+            const mediaFiles = xmlDoc.getElementsByTagName('MediaFile');
+            if (mediaFiles.length === 0) {
+                 throw new Error("No MediaFile found in VAST XML");
+            }
+            
+            let bestMediaFileUrl = '';
+            let bestType = '';
+            for (let i = 0; i < mediaFiles.length; i++) {
+                const node = mediaFiles[i];
+                const type = node.getAttribute('type') || '';
+                const url = node.textContent?.trim() || '';
+                
+                if (url) {
+                     console.log(`Found MediaFile: URL=${url}, MIME=${type}, Resolution=${node.getAttribute('width')}x${node.getAttribute('height')}`);
+                     
+                     if (type === 'video/mp4' && !bestMediaFileUrl) {
+                         bestMediaFileUrl = url;
+                         bestType = type;
+                     }
+                }
+            }
+            
+            if (!bestMediaFileUrl) {
+                 bestMediaFileUrl = mediaFiles[0].textContent?.trim() || '';
+                 bestType = mediaFiles[0].getAttribute('type') || 'video/mp4';
+            }
+            
+            if (!bestMediaFileUrl) {
+                throw new Error("Could not extract a valid MediaFile URL from VAST XML");
+            }
+            
+            console.log(`Selected Best MediaFile URL: ${bestMediaFileUrl}`);
+            
+            // Try fetching the MediaFile to verify it is reachable
+            try {
+               console.log(`Verifying MediaFile reachability: ${bestMediaFileUrl}`);
+               await fetch(bestMediaFileUrl, { method: 'HEAD', mode: 'no-cors' });
+            } catch (e) {
+               console.warn("MediaFile reachability check failed or blocked by CORS, proceeding anyway:", e);
+            }
+
+            console.log('MediaFile available. Attaching to video element and initializing fluid-player...');
+            
+            const sourceEl = document.createElement('source');
+            sourceEl.src = bestMediaFileUrl;
+            sourceEl.type = bestType;
+            videoEl.appendChild(sourceEl);
+
             const player = fluidPlayer(videoEl.id, {
-              vastOptions: {
-                adList: [{
-                  roll: 'preRoll',
-                  vastTag: vastInput.trim(),
-                  adText: 'Ad'
-                }]
-              }
+               layoutControls: {
+                 autoPlay: true,
+                 mute: true,
+                 allowFullscreen: true
+               }
             });
             
             // Try to auto-play the ad
@@ -563,8 +629,6 @@ export default function App() {
                console.log('VAST: Ad started playing.');
                setVideoResults(prev => ({ 
                  ...prev, 
-                 adRequestSent: true,
-                 httpStatus: 200,
                  videoAdStarted: true 
                }));
             };
@@ -606,12 +670,16 @@ export default function App() {
             videoEl.addEventListener('play', onPlay);
             videoEl.addEventListener('ended', onEnded);
             videoEl.addEventListener('error', onError);
+            videoEl.addEventListener('loadedmetadata', () => {
+                 console.log(`Video duration: ${videoEl.duration} seconds`);
+                 console.log('Player ready');
+            });
             
           } catch (err: any) {
-            console.error('Failed to initialize fluid-player:', err);
+            console.error('Failed to parse VAST or initialize fluid-player:', err);
             setVideoResults(prev => ({
                ...prev,
-               failureReason: 'Failed to initialize player'
+               failureReason: err.message || 'Failed to initialize player'
             }));
           }
         }
