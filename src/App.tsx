@@ -104,13 +104,15 @@ XMLHttpRequest.prototype.send = function (...args: any[]) {
 
 // --- Component ---
 export default function App() {
-  const [scriptInput, setScriptInput] = useState('');
+  const [scriptInput, setScriptInput] = useState('<script async src="https://js.onclckmn.com/static/onclicka.js" data-admpid="447218"></script>');
+  const [bannerSpotId, setBannerSpotId] = useState('6122185');
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [networkLogs, setNetworkLogs] = useState<NetworkRequest[]>([]);
   
   const [results, setResults] = useState({
     scriptLoaded: false,
+    containerFound: false,
     sdkInitialized: false,
     requestSent: false,
     requestUrl: '',
@@ -157,6 +159,7 @@ export default function App() {
     setNetworkLogs([]);
     setResults({
       scriptLoaded: false,
+      containerFound: false,
       sdkInitialized: false,
       requestSent: false,
       requestUrl: '',
@@ -268,6 +271,7 @@ export default function App() {
     });
 
     // 4. Inject non-script pasted elements, and proactively create standard mount targets
+    let containerCreated = false;
     if (previewStage) {
       Array.from(doc.body.children).forEach(child => {
         if (child.tagName !== 'SCRIPT') {
@@ -276,55 +280,60 @@ export default function App() {
         }
       });
       
-      if (admpid) {
-        if (!doc.getElementById(admpid)) {
-          const m1 = document.createElement('div');
-          m1.id = admpid;
-          previewStage.appendChild(m1);
+      const targetSpotId = bannerSpotId.trim() || admpid;
+      
+      if (targetSpotId) {
+        if (!previewStage.querySelector(`[data-banner-id="${targetSpotId}"]`)) {
+          const bannerContainer = document.createElement('div');
+          bannerContainer.setAttribute('data-banner-id', targetSpotId);
+          previewStage.appendChild(bannerContainer);
+          console.log(`Banner container created (data-banner-id="${targetSpotId}")`);
+          containerCreated = true;
+        } else {
+          console.log('Banner container already exists');
+          containerCreated = true;
         }
-        if (!doc.getElementById(`container-${admpid}`)) {
-          const m2 = document.createElement('div');
-          m2.id = `container-${admpid}`;
-          previewStage.appendChild(m2);
-        }
-        if (!previewStage.querySelector(`[data-banner-id="${admpid}"]`)) {
-          const m3 = document.createElement('div');
-          m3.setAttribute('data-banner-id', admpid);
-          previewStage.appendChild(m3);
-        }
-        console.log(`Created standard mount targets for ID ${admpid}`);
       }
     }
+    setResults(prev => ({ ...prev, containerFound: containerCreated }));
 
     // 5. Inject script with exactly the same attributes
-    console.log('Injecting script into preview stage...');
-    const injectedScript = document.createElement('script');
-    injectedScript.id = 'onclicka-injected';
+    console.log('Injecting loader script...');
+    let finalSrc = src;
+    if (finalSrc.startsWith('//')) finalSrc = 'https:' + finalSrc;
     
-    Array.from(scriptTag.attributes).forEach(attr => {
-      if (attr.name === 'src') {
-        let finalSrc = attr.value;
-        if (finalSrc.startsWith('//')) finalSrc = 'https:' + finalSrc;
-        injectedScript.setAttribute('src', finalSrc);
-      } else {
-        injectedScript.setAttribute(attr.name, attr.value);
-      }
-    });
+    const existingScript = document.head.querySelector(`script[src="${finalSrc}"]`) || (admpid ? document.head.querySelector(`script[data-admpid="${admpid}"]`) : null);
     
-    injectedScript.async = true;
-
-    const scriptLoadedPromise = new Promise<boolean>((resolve) => {
-      injectedScript.onload = () => resolve(true);
-      injectedScript.onerror = () => resolve(false);
-    });
-
-    if (previewStage) {
-      previewStage.appendChild(injectedScript);
+    let isLoaded = false;
+    
+    if (existingScript) {
+      console.log('Loader already exists');
+      isLoaded = true;
     } else {
-      document.body.appendChild(injectedScript);
+      console.log('Loader script injected');
+      const injectedScript = document.createElement('script');
+      injectedScript.id = `onclicka-injected-${admpid || Date.now()}`;
+      
+      Array.from(scriptTag.attributes).forEach(attr => {
+        if (attr.name === 'src') {
+          injectedScript.setAttribute('src', finalSrc);
+        } else {
+          injectedScript.setAttribute(attr.name, attr.value);
+        }
+      });
+      
+      injectedScript.async = true;
+
+      const scriptLoadedPromise = new Promise<boolean>((resolve) => {
+        injectedScript.onload = () => resolve(true);
+        injectedScript.onerror = () => resolve(false);
+      });
+
+      document.head.appendChild(injectedScript);
+
+      isLoaded = await scriptLoadedPromise;
     }
 
-    const isLoaded = await scriptLoadedPromise;
     if (!isLoaded) {
       console.warn('Script injection failed (onerror triggered). This may be due to an Ad Blocker, a network issue, or an invalid URL.');
       clearTimeout(networkTimeout);
@@ -462,8 +471,8 @@ export default function App() {
   };
 
   const clearPreview = () => {
-    const existingScript = document.getElementById('onclicka-injected');
-    if (existingScript) existingScript.remove();
+    const existingScripts = document.querySelectorAll('script[id^="onclicka-injected"]');
+    existingScripts.forEach(script => script.remove());
     
     const previewStage = document.getElementById('onclicka-preview-stage');
     if (previewStage) {
@@ -478,6 +487,7 @@ export default function App() {
     setNetworkLogs([]);
     setResults({
       scriptLoaded: false,
+      containerFound: false,
       sdkInitialized: false,
       requestSent: false,
       requestUrl: '',
@@ -551,17 +561,29 @@ export default function App() {
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
               <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Paste &lt;script&gt; Tag
+                Paste &lt;script&gt; Tag (Loader)
               </label>
               <textarea
-                className="w-full h-32 p-3 font-mono text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none bg-gray-50"
+                className="w-full h-24 p-3 font-mono text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none bg-gray-50"
                 placeholder='<script src="https://example.com/ad.js" data-admpid="12345"></script>'
                 value={scriptInput}
                 onChange={(e) => setScriptInput(e.target.value)}
                 disabled={isRunning}
               />
               
-              <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className="block text-sm font-semibold text-gray-700 mt-4 mb-2">
+                Banner Spot ID
+              </label>
+              <input
+                type="text"
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm outline-none"
+                placeholder="6122185"
+                value={bannerSpotId}
+                onChange={(e) => setBannerSpotId(e.target.value)}
+                disabled={isRunning}
+              />
+              
+              <div className="mt-6 grid grid-cols-2 gap-3">
                 <button
                   onClick={runTest}
                   disabled={isRunning}
@@ -660,9 +682,14 @@ export default function App() {
               <h3 className="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wider">Live Status</h3>
               <div className="space-y-3">
                 <StatusItem
-                  label="Script Loaded"
+                  label="Loader Script Loaded"
                   active={isRunning || results.completed || results.scriptLoaded}
                   success={results.scriptLoaded}
+                />
+                <StatusItem
+                  label="Banner Container Found"
+                  active={isRunning || results.completed || results.containerFound}
+                  success={results.containerFound}
                 />
                 <StatusItem
                   label="SDK Initialized"
