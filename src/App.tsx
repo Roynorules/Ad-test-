@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import fluidPlayer from 'fluid-player';
+import 'fluid-player/src/css/fluidplayer.css';
 import { Play, CheckCircle2, XCircle, Loader2, Info, RefreshCw, Trash2, Copy, Tv } from 'lucide-react';
 
 // --- Global Interceptors ---
@@ -106,6 +108,8 @@ XMLHttpRequest.prototype.send = function (...args: any[]) {
 export default function App() {
   const [scriptInput, setScriptInput] = useState('<script async src="https://js.onclckmn.com/static/onclicka.js" data-admpid="447218"></script>');
   const [bannerSpotId, setBannerSpotId] = useState('6122185');
+  const [vastInput, setVastInput] = useState('');
+  
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [networkLogs, setNetworkLogs] = useState<NetworkRequest[]>([]);
@@ -125,6 +129,15 @@ export default function App() {
     currentDomain: window.location.hostname,
     spotId: '',
     publisherId: '',
+  });
+
+  const [videoResults, setVideoResults] = useState({
+    vastUrlLoaded: false,
+    adRequestSent: false,
+    httpStatus: null as number | null,
+    videoAdStarted: false,
+    videoAdCompleted: false,
+    failureReason: '',
   });
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -149,14 +162,18 @@ export default function App() {
   }, [logs]);
 
   const runTest = async () => {
-    if (!scriptInput.trim()) {
-      alert('Please paste a script tag first.');
+    const hasBanner = scriptInput.trim().length > 0;
+    const hasVast = vastInput.trim().length > 0;
+
+    if (!hasBanner && !hasVast) {
+      alert('Please provide a Banner Script or VAST URL.');
       return;
     }
 
     setIsRunning(true);
     setLogs([]);
     setNetworkLogs([]);
+    
     setResults({
       scriptLoaded: false,
       containerFound: false,
@@ -174,6 +191,15 @@ export default function App() {
       publisherId: '',
     });
 
+    setVideoResults({
+      vastUrlLoaded: false,
+      adRequestSent: false,
+      httpStatus: null,
+      videoAdStarted: false,
+      videoAdCompleted: false,
+      failureReason: '',
+    });
+
     console.log('--- Starting New Test ---');
 
     // 1. Clear preview stage
@@ -188,41 +214,40 @@ export default function App() {
       console.log('Cleared preview stage.');
     }
 
-    // 2. Parse the pasted script
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(scriptInput, 'text/html');
-    const scriptTag = doc.querySelector('script');
+    // 2. Banner Logic
+    if (hasBanner) {
+      await (async () => {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(scriptInput, 'text/html');
+        const scriptTag = doc.querySelector('script');
 
-    if (!scriptTag) {
-      console.warn('Failed to parse <script> tag from input.');
-      setResults((prev) => ({
-        ...prev,
-        completed: true,
-        failureReason: 'Invalid Script Input (No <script> tag)',
-      }));
-      setIsRunning(false);
-      return;
-    }
+        if (!scriptTag) {
+          console.warn('Failed to parse <script> tag from input.');
+          setResults((prev) => ({
+            ...prev,
+            completed: true,
+            failureReason: 'Invalid Script Input (No <script> tag)',
+          }));
+          return;
+        }
 
-    let src = scriptTag.getAttribute('src') || '';
-    let admpid = scriptTag.getAttribute('data-admpid') || scriptTag.getAttribute('data-zone') || '';
-    
-    // Fallback ID extraction from src (e.g. /12345.js or ?zone=12345)
-    if (!admpid) {
-        const match = src.match(/\/(\d+)(?:\.js|$|\?)/);
-        if (match) admpid = match[1];
-    }
+        let src = scriptTag.getAttribute('src') || '';
+        let admpid = scriptTag.getAttribute('data-admpid') || scriptTag.getAttribute('data-zone') || '';
+        
+        if (!admpid) {
+            const match = src.match(/\/(\d+)(?:\.js|$|\?)/);
+            if (match) admpid = match[1];
+        }
 
-    if (!src) {
-      console.warn('No src attribute found in the script tag.');
-      setResults((prev) => ({
-        ...prev,
-        completed: true,
-        failureReason: 'Missing src attribute',
-      }));
-      setIsRunning(false);
-      return;
-    }
+        if (!src) {
+          console.warn('No src attribute found in the script tag.');
+          setResults((prev) => ({
+            ...prev,
+            completed: true,
+            failureReason: 'Missing src attribute',
+          }));
+          return;
+        }
 
     // Try to guess Publisher ID / Zone from src if possible, though mostly Spot ID is what we have
     let publisherId = '';
@@ -483,6 +508,88 @@ export default function App() {
       fillStatus,
     }));
 
+      })();
+    }
+
+    if (hasVast) {
+      await (async () => {
+        console.log('--- Starting VAST Test ---');
+        setVideoResults(prev => ({ ...prev, vastUrlLoaded: true }));
+        
+        const previewStage = document.getElementById('onclicka-preview-stage');
+        if (previewStage) {
+          const videoWrapper = document.createElement('div');
+          videoWrapper.className = "mt-6 w-full relative";
+          
+          const videoEl = document.createElement('video');
+          videoEl.id = `fluid-player-${Date.now()}`;
+          videoEl.className = "w-full";
+          videoEl.muted = true; // Required for reliable autoplay
+          
+          videoWrapper.appendChild(videoEl);
+          previewStage.appendChild(videoWrapper);
+          
+          console.log('Video element created, initializing fluid-player...');
+          
+          try {
+            const player = fluidPlayer(videoEl.id, {
+              vastOptions: {
+                adList: [{
+                  roll: 'preRoll',
+                  vastTag: vastInput.trim(),
+                  adText: 'Ad'
+                }]
+              }
+            });
+            
+            // Try to auto-play the ad
+            setTimeout(() => {
+                try {
+                    if (player && typeof player.play === 'function') {
+                        player.play();
+                    } else {
+                        videoEl.play().catch(e => console.warn('Auto-play prevented:', e));
+                    }
+                } catch (e) {
+                    console.warn('Auto-play failed:', e);
+                }
+            }, 500);
+            
+            // Native video element events since fluid player uses it
+            videoEl.addEventListener('play', () => {
+               console.log('VAST: Ad started playing.');
+               setVideoResults(prev => ({ 
+                 ...prev, 
+                 adRequestSent: true,
+                 httpStatus: 200,
+                 videoAdStarted: true 
+               }));
+            });
+            
+            videoEl.addEventListener('ended', () => {
+               console.log('VAST: Video Ad Completed.');
+               setVideoResults(prev => ({ ...prev, videoAdCompleted: true }));
+            });
+            
+            videoEl.addEventListener('error', (e: any) => {
+               console.warn('VAST Error:', e);
+               setVideoResults(prev => ({ 
+                 ...prev, 
+                 failureReason: 'VAST Error or No Fill' 
+               }));
+            });
+            
+          } catch (err: any) {
+            console.error('Failed to initialize fluid-player:', err);
+            setVideoResults(prev => ({
+               ...prev,
+               failureReason: 'Failed to initialize player'
+            }));
+          }
+        }
+      })();
+    }
+
     setIsRunning(false);
   };
 
@@ -599,6 +706,20 @@ export default function App() {
                 disabled={isRunning}
               />
               
+              <div className="mt-6 border-t border-gray-200 pt-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Video / In-Stream Ad (VAST URL)
+                </label>
+                <input
+                  type="text"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm outline-none"
+                  placeholder="https://bid.onclckstr.com/vast?spot_id=6122191"
+                  value={vastInput}
+                  onChange={(e) => setVastInput(e.target.value)}
+                  disabled={isRunning}
+                />
+              </div>
+              
               <div className="mt-6 grid grid-cols-2 gap-3">
                 <button
                   onClick={runTest}
@@ -696,46 +817,79 @@ export default function App() {
             
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
               <h3 className="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wider">Live Status</h3>
-              <div className="space-y-3">
-                <StatusItem
-                  label="Loader Script Loaded"
-                  active={isRunning || results.completed || results.scriptLoaded}
-                  success={results.scriptLoaded}
-                />
-                <StatusItem
-                  label="Banner Container Found"
-                  active={isRunning || results.completed || results.containerFound}
-                  success={results.containerFound}
-                />
-                <StatusItem
-                  label="SDK Initialized"
-                  active={(isRunning && results.scriptLoaded) || results.completed}
-                  success={results.sdkInitialized}
-                />
-                <StatusItem
-                  label="Request Sent"
-                  active={(isRunning && results.scriptLoaded) || results.completed}
-                  success={results.requestSent}
-                />
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100 text-sm">
-                  <div className="text-gray-500">HTTP Status:</div>
-                  <div className="font-medium text-gray-900 text-right">{results.httpStatus || '-'}</div>
-                  
-                  <div className="text-gray-500">Ad Rendered:</div>
-                  <div className="font-medium text-gray-900 text-right">{results.completed ? (results.adRendered ? 'Yes' : 'No') : '-'}</div>
-                  
-                  <div className="text-gray-500">Fill Status:</div>
-                  <div className="font-medium text-gray-900 text-right">{results.fillStatus || '-'}</div>
-                  
-                  <div className="text-gray-500">Current Domain:</div>
-                  <div className="font-medium text-gray-900 text-right truncate" title={results.currentDomain}>{results.currentDomain}</div>
-                  
-                  <div className="text-gray-500">Spot ID:</div>
-                  <div className="font-medium text-gray-900 text-right">{results.spotId || '-'}</div>
-
-                  <div className="text-gray-500">Publisher ID:</div>
-                  <div className="font-medium text-gray-900 text-right">{results.publisherId || '-'}</div>
+              
+              {(scriptInput.trim() || !vastInput.trim()) && (
+                <div className="space-y-3 mb-6">
+                  <h4 className="font-semibold text-gray-700">Banner:</h4>
+                  <StatusItem
+                    label="Loader Script Loaded"
+                    active={isRunning || results.completed || results.scriptLoaded}
+                    success={results.scriptLoaded}
+                  />
+                  <StatusItem
+                    label="Banner Container Found"
+                    active={isRunning || results.completed || results.containerFound}
+                    success={results.containerFound}
+                  />
+                  <StatusItem
+                    label="Banner Rendered"
+                    active={isRunning || results.completed}
+                    success={results.adRendered}
+                    failMessage={!isRunning && results.completed && !results.adRendered ? results.failureReason : undefined}
+                  />
                 </div>
+              )}
+
+              {vastInput.trim() && (
+                <div className="space-y-3 mb-6 border-t border-gray-100 pt-4">
+                  <h4 className="font-semibold text-gray-700">Video:</h4>
+                  <StatusItem
+                    label="VAST URL Loaded"
+                    active={isRunning || videoResults.vastUrlLoaded}
+                    success={videoResults.vastUrlLoaded}
+                  />
+                  <StatusItem
+                    label="Ad Request Sent"
+                    active={isRunning || videoResults.adRequestSent || videoResults.failureReason !== ''}
+                    success={videoResults.adRequestSent}
+                  />
+                  <StatusItem
+                    label="HTTP Status"
+                    active={isRunning || videoResults.httpStatus !== null || videoResults.failureReason !== ''}
+                    success={videoResults.httpStatus === 200}
+                  />
+                  <StatusItem
+                    label="Video Ad Started"
+                    active={videoResults.videoAdStarted || videoResults.failureReason !== ''}
+                    success={videoResults.videoAdStarted}
+                  />
+                  <StatusItem
+                    label="Video Ad Completed"
+                    active={videoResults.videoAdCompleted || videoResults.failureReason !== ''}
+                    success={videoResults.videoAdCompleted}
+                    failMessage={videoResults.failureReason}
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100 text-sm">
+                <div className="text-gray-500">Banner HTTP Status:</div>
+                <div className="font-medium text-gray-900 text-right">{results.httpStatus || '-'}</div>
+                
+                <div className="text-gray-500">Video HTTP Status:</div>
+                <div className="font-medium text-gray-900 text-right">{videoResults.httpStatus || '-'}</div>
+                
+                <div className="text-gray-500">Fill Status:</div>
+                <div className="font-medium text-gray-900 text-right">{results.fillStatus || '-'}</div>
+                
+                <div className="text-gray-500">Current Domain:</div>
+                <div className="font-medium text-gray-900 text-right truncate" title={results.currentDomain}>{results.currentDomain}</div>
+                
+                <div className="text-gray-500">Spot ID:</div>
+                <div className="font-medium text-gray-900 text-right">{results.spotId || '-'}</div>
+
+                <div className="text-gray-500">Publisher ID:</div>
+                <div className="font-medium text-gray-900 text-right">{results.publisherId || '-'}</div>
               </div>
             </div>
           </div>
