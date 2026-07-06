@@ -1,0 +1,6 @@
+{
+  "name": "OnClickA Tester",
+  "description": "Standalone tester for OnClickA scripts with network monitoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
