@@ -516,6 +516,8 @@ export default function App() {
         console.log('--- Starting VAST Test ---');
         setVideoResults(prev => ({ ...prev, vastUrlLoaded: true }));
         
+        let adFinishedSuccessfully = false;
+
         const previewStage = document.getElementById('onclicka-preview-stage');
         if (previewStage) {
           const videoWrapper = document.createElement('div');
@@ -543,7 +545,7 @@ export default function App() {
             });
             
             // Try to auto-play the ad
-            setTimeout(() => {
+            const autoPlayTimer = setTimeout(() => {
                 try {
                     if (player && typeof player.play === 'function') {
                         player.play();
@@ -556,7 +558,8 @@ export default function App() {
             }, 500);
             
             // Native video element events since fluid player uses it
-            videoEl.addEventListener('play', () => {
+            const onPlay = () => {
+               if (adFinishedSuccessfully) return;
                console.log('VAST: Ad started playing.');
                setVideoResults(prev => ({ 
                  ...prev, 
@@ -564,20 +567,45 @@ export default function App() {
                  httpStatus: 200,
                  videoAdStarted: true 
                }));
-            });
+            };
             
-            videoEl.addEventListener('ended', () => {
+            const onEnded = () => {
+               if (adFinishedSuccessfully) return;
                console.log('VAST: Video Ad Completed.');
+               adFinishedSuccessfully = true;
+               clearTimeout(autoPlayTimer);
                setVideoResults(prev => ({ ...prev, videoAdCompleted: true }));
-            });
+               
+               // Cleanup player to prevent subsequent fake errors
+               setTimeout(() => {
+                 try {
+                   if (player && typeof player.destroy === 'function') {
+                     player.destroy();
+                   }
+                   videoEl.removeEventListener('play', onPlay);
+                   videoEl.removeEventListener('ended', onEnded);
+                   videoEl.removeEventListener('error', onError);
+                 } catch (e) {
+                   console.warn('Cleanup failed:', e);
+                 }
+               }, 100);
+            };
             
-            videoEl.addEventListener('error', (e: any) => {
+            const onError = (e: any) => {
+               if (adFinishedSuccessfully) {
+                   console.log("Ignoring VAST error after successful completion.");
+                   return;
+               }
                console.warn('VAST Error:', e);
                setVideoResults(prev => ({ 
                  ...prev, 
                  failureReason: 'VAST Error or No Fill' 
                }));
-            });
+            };
+
+            videoEl.addEventListener('play', onPlay);
+            videoEl.addEventListener('ended', onEnded);
+            videoEl.addEventListener('error', onError);
             
           } catch (err: any) {
             console.error('Failed to initialize fluid-player:', err);
